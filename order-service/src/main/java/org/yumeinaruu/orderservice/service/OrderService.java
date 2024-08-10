@@ -1,9 +1,11 @@
 package org.yumeinaruu.orderservice.service;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.yumeinaruu.orderservice.event.OrderPlacedEvent;
 import org.yumeinaruu.orderservice.model.Order;
 import org.yumeinaruu.orderservice.model.OrderLineItems;
 import org.yumeinaruu.orderservice.model.dto.InventoryResponse;
@@ -20,7 +22,7 @@ import java.util.UUID;
 @Transactional
 public class OrderService {
     private final OrderRepository orderRepository;
-    private final WebClient.Builder webClientBuilder;
+    private final KafkaTemplate<String, OrderPlacedEvent> kafkaTemplate;
 
     public void placeOrder(OrderRequest orderRequest) {
         Order order = new Order();
@@ -30,23 +32,10 @@ public class OrderService {
                 .map(this::mapToDto)
                 .toList();
         order.setOrderLineItemsList(orderLineItems);
-        List<String> skuCodes = order.getOrderLineItemsList().stream()
-                .map(OrderLineItems::getSkuCode)
-                .toList();
-        // call inventory service and place order that is in stock
-        InventoryResponse[] inventoryResponseArray = webClientBuilder.build().get()
-                .uri("http://inventory-service/api/inventory",
-                        uriBuilder -> uriBuilder.queryParam("skuCode", skuCodes).build())
-                .retrieve()
-                .bodyToMono(InventoryResponse[].class)
-                .block();
-        boolean allProductsInTheStock = Arrays.stream(inventoryResponseArray)
-                .allMatch(InventoryResponse::getIsInStock);
-        if (allProductsInTheStock) {
-            orderRepository.save(order);
-        } else {
-            throw new IllegalArgumentException("Product is not in stock");
-        }
+        orderRepository.save(order);
+
+        OrderPlacedEvent orderPlacedEvent = new OrderPlacedEvent(order.getOrderNumber());
+        kafkaTemplate.send("order-placed", orderPlacedEvent);
     }
 
     private OrderLineItems mapToDto(OrderLineItemsDto orderLineItemsDto) {
